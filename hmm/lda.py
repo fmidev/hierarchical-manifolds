@@ -172,17 +172,18 @@ class PriorWeight(object):
         self.NIX = (1.0, 1.0)
         self.IWishart = 1.0
         if (cfg is not None):
-            if isinstance(cfg['Beta'], (int, float)):
+            if ('Beta' in cfg) and isinstance(cfg['Beta'], (int, float)):
                 self.Beta = cfg['Beta']
-            if isinstance(cfg['Dirichlet'], (int, float)):
+            if ('Dirichlet' in cfg) and isinstance(cfg['Dirichlet'], (int, float)):
                 self.Dirichlet = cfg['Dirichlet']
-            if isinstance(cfg['NIX'], (int, float)):
-                self.NIX = (cfg['NIX'], cfg['NIX'])
-            elif isinstance(cfg['NIX'], list):
-                self.NIX = (cfg['NIX'][0], cfg['NIX'][1])
-            elif isinstance(cfg['NIX'], tuple):
-                self.NIX = cfg['NIX']
-            if isinstance(cfg['IWishart'], (int, float)):
+            if ('NIX' in cfg):
+                if isinstance(cfg['NIX'], (int, float)):
+                    self.NIX = (cfg['NIX'], cfg['NIX'])
+                elif isinstance(cfg['NIX'], list):
+                    self.NIX = (cfg['NIX'][0], cfg['NIX'][1])
+                elif isinstance(cfg['NIX'], tuple):
+                    self.NIX = cfg['NIX']
+            if ('IWishart' in cfg) and isinstance(cfg['IWishart'], (int, float)):
                 self.IWishart = cfg['IWishart']
 
 class LDAPar(ifc.IDataPar):

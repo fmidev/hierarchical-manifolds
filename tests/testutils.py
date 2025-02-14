@@ -20,6 +20,8 @@ from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.preprocessing import LabelBinarizer
 import hmm.interfaces as ifc
 from hmm.algorithms import dirichlet_uncertainty
+from hmm.models import EigType
+from hmm.lda import LDAPar
 from hmm import hlda
 
 ### Configuration ##############################################################
@@ -155,7 +157,7 @@ class PerfDataConfig(object):
         self.tractor = TractorConfig()
         self.rotate = True
         self.oom_data = True
-        self.oom_extend = 2.5
+        self.oom_extend = 1.5
         self.random_state = None
 
 class PerfPlotConfig(object):
@@ -170,7 +172,7 @@ class PerfPlotConfig(object):
         self.save = True
         self.markersize = 3
         self.mew = 0.5
-        self.size = (5,5)
+        self.size = (6,6)
         self.dpi = 300
 
 class Classifier(object):
@@ -887,6 +889,12 @@ def kfoldtest(Ncl, Xc, Y, Z, C, K=5, frac=1):
     Y_lst = []
     Yp_lst = []
     P_oomax = []
+
+    nx_train = np.zeros(Nmd, dtype=np.int)
+    tx_train = np.zeros(Nmd)
+    nx_test = np.zeros(Nmd, dtype=np.int)
+    tx_test = np.zeros(Nmd)
+
     for k in range(K):
         for j in range(frac):
             Xtr = []
@@ -911,15 +919,30 @@ def kfoldtest(Ncl, Xc, Y, Z, C, K=5, frac=1):
             if (Z is not None):
                 Pn = np.zeros((Z.shape[0],Nmd))
             for i, M in enumerate(C):
+
+                tix = time.process_time()
                 M.algo.fit(X_train, Y_train)
+                tx_train[i] += time.process_time() - tix
+                nx_train[i] += Y_train.size
+
                 if M.is_dist:
+
+                    tix = time.process_time()
                     Pp[:,Ncl*i:Ncl*(i+1)] = M.algo.predict_para(X_test)
+                    tx_test[i] += time.process_time() - tix
+                    nx_test[i] += X_test.shape[0]
+
                     if (Z is not None):
                         p = M.algo.predict_para(Z)
                         p /= np.sum(p, axis=1).reshape((-1,1))
                         Pn[:,i] = np.amax(p, axis=1)
                 else:
+
+                    tix = time.process_time()
                     Pp[:,Ncl*i:Ncl*(i+1)] = M.algo.predict_proba(X_test)
+                    tx_test[i] += time.process_time() - tix
+                    nx_test[i] += X_test.shape[0]
+
                     if (Z is not None):
                         Pn[:,i] = np.amax(M.algo.predict_proba(Z), axis=1)
             Y_lst.append(Y_test)
@@ -931,7 +954,8 @@ def kfoldtest(Ncl, Xc, Y, Z, C, K=5, frac=1):
         POMAX = np.zeros(0)
     else:
         POMAX = np.vstack(P_oomax)
-    return (np.hstack(Y_lst), np.vstack(Yp_lst), POMAX)
+    tixx = (nx_train, tx_train, nx_test, tx_test)
+    return (np.hstack(Y_lst), np.vstack(Yp_lst), POMAX, tixx)
 
 class CustomGNB(object):
     def __init__(self):
@@ -1638,13 +1662,14 @@ class PerformanceTest(object):
         self.plot = PerfPlotConfig()
         self.n_fold = 5
         self.r_train = [ 1, 2, 4, 8, 16, 32, 64, 128, 256 ]
-        self.hlda_sub = (self.data.n_dim_inform +
-            (self.data.n_dim_random + 1) // 2)
+
+        self.hlda_sub = self.data.n_dim_inform
+
         self.method = [
-            Classifier(None, 'BP', 'Bayesian Partitioning',
-                'tab:red', (0, (3, 1, 1, 1, 1, 1)), 'o', dist=True),
             Classifier(CustomGNB(), 'NB', 'Naive Bayes',
                 'tab:gray', (0, (3, 1, 1, 1)), 's', dist=True),
+            Classifier(None, 'BP', 'Bayesian Partitioning',
+                'tab:red', (0, (3, 1, 1, 1, 1, 1)), 'o', dist=True),
             Classifier(RandomForestClassifier(), 'RF', 'Random Forest',
                 'tab:olive', '--', '^'),
             Classifier(LogisticRegressionCV(), 'LR', 'Logistic Regression',
@@ -1658,7 +1683,11 @@ class PerformanceTest(object):
         # add the HLDA classifier to the set (cannot add it before this point
         # because the configuration can change)
 
-        self.method[0].algo = hlda(self.data.n_classes, D, sub=self.hlda_sub)
+        # NB: force matrix solver (LOBPCG not optimized for performance)
+
+        hpars = LDAPar(self.data.n_classes, D, eigalg=EigType.MATRIX,
+            sub=self.hlda_sub)
+        self.method[0].algo = hlda(hpars)
 
         # create the dataset
 
@@ -1681,8 +1710,10 @@ class PerformanceTest(object):
             r2 = np.sum(self.X**2, axis=1)
             irx = np.argmax(r2)
             rx = r2[irx]**0.5
-            self.Xoom = make_shell(self.data.n_data, D,
-                r0=self.data.oom_extend * rx)
+            N = self.data.n_data
+            self.Xoom = np.random.randn(N*D).reshape((N,D))
+            self.Xoom[:,0:self.data.n_dim_inform] = make_shell(self.data.n_data,
+                self.data.n_dim_inform, r0=self.data.oom_extend * rx)
         else:
             self.Xoom = None
 
@@ -1705,8 +1736,9 @@ class PerformanceTest(object):
                         markersize=self.plot.markersize,
                         markeredgewidth=self.plot.mew)
             if (self.Xoom is not None):
-                if (self.Xoom.shape[0] > Nx):
-                    ax.plot(self.Xoom[0:Nx,0], self.Xoom[0:Nx,1], '.',
+                Mx = self.n_fold * Nx
+                if (self.Xoom.shape[0] > Mx):
+                    ax.plot(self.Xoom[0:Mx,0], self.Xoom[0:Mx,1], '.',
                         c='magenta', markersize=self.plot.markersize,
                         markeredgewidth=self.plot.mew)
                 else:
@@ -1729,6 +1761,7 @@ class PerformanceTest(object):
             np.random.seed(self.data.random_state)
             self.R = rrot(D)
             self.X = np.matmul(self.X, self.R)
+            self.Xoom = np.matmul(self.Xoom, self.R)
         else:
             self.R = None
 
@@ -1741,6 +1774,8 @@ class PerformanceTest(object):
         MCE = []
         NDS = []
         Ntr = []
+        TTR = []
+        TTS = []
         for k, Nr in enumerate(self.r_train):
             Ntr.append(self.data.n_classes * self.data.n_data // Nr)
             acc = []
@@ -1750,9 +1785,12 @@ class PerformanceTest(object):
             cas = []
             mce = []
             nds = []
-            y, py, pom = kfoldtest(self.data.n_classes, self.X, self.Y,
-                self.Xoom, self.method, K=self.n_fold, frac=Nr)
+            ttr = []
+            tts = []
 
+            start_time = time.process_time()
+            y, py, pom, tixx = kfoldtest(self.data.n_classes, self.X, self.Y,
+                self.Xoom, self.method, K=self.n_fold, frac=Nr)
             for i, M in enumerate(self.method):
                 if (pom is None):
                     pomi = None
@@ -1772,6 +1810,8 @@ class PerformanceTest(object):
                 nds.append(ret['NDS'])
                 if self.plot.AS:
                     self.plot_AS(ret, Ntr[k], i)
+                ttr.append(tixx[1][i] / tixx[0][i])
+                tts.append(tixx[3][i] / tixx[2][i])
 
             if self.plot.ROC:
                 fig, ax = plt.subplots()
@@ -1803,6 +1843,8 @@ class PerformanceTest(object):
             if (len(mce) > 0):
                 MCE.append(mce)
             NDS.append(nds)
+            TTR.append(ttr)
+            TTS.append(tts)
 
         if self.plot.scores:
             N = np.array(Ntr)
@@ -1815,6 +1857,8 @@ class PerformanceTest(object):
                 self.score_plot(N, np.array(MCE), 'MCE', 'MCE')
                 self.score_plot(N, np.array(CAS), 'MACE', 'MACE')
             self.score_plot(N, np.array(NDS), 'NDS', 'NDS')
+            self.score_plot(N, np.array(TTR), 'TTR', 'Time (s)', logy=True)
+            self.score_plot(N, np.array(TTS), 'TTS', 'Time (s)', logy=True)
 
     def plot_AS(self, ret, N, ix):
         K = self.data.n_classes
@@ -1861,16 +1905,19 @@ class PerformanceTest(object):
         else:
             plt.show()
 
-    def score_plot(self, N, S, ID, name):
+    def score_plot(self, N, S, ID, name, logy=False):
         Nn = N.size
+        plt.rcParams["mathtext.fontset"] = 'cm'
         fig, ax = plt.subplots()
         for i, M in enumerate(self.method):
             ax.plot(N, S[:,i], M.mk + '-', c=M.c, label=M.cid)
         ax.set_xscale('log')
+        if logy:
+            ax.set_yscale('log')
         ax.set_xlabel('Training set size')
         ax.set_ylabel(name)
         ax.legend(loc='best')
-        plt.tight_layout()
+#        plt.tight_layout()
         if self.plot.save:
             psz = self.plot.size
             plt.gcf().set_size_inches(psz[0],psz[1])
